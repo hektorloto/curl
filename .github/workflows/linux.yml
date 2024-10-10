@@ -41,7 +41,9 @@ env:
   bearssl-version: 0.6
   # renovate: datasource=github-tags depName=libressl-portable/portable versioning=semver registryUrl=https://github.com
   libressl-version: 3.9.2
-  # renovate: datasource=github-tags depName=ARMmbed/mbedtls versioning=semver registryUrl=https://github.com
+  # renovate: datasource=github-tags depName=wolfSSL/wolfssl versioning=semver extractVersion=^v?(?<version>.+)-stable$ registryUrl=https://github.com
+  wolfssl-version: 5.7.2
+  # renovate: datasource=github-tags depName=Mbed-TLS/mbedtls versioning=semver registryUrl=https://github.com
   mbedtls-version: 3.6.0
   # renovate: datasource=github-tags depName=icing/mod_h2 versioning=semver registryUrl=https://github.com
   mod_h2-version: 2.0.29
@@ -61,7 +63,7 @@ jobs:
     name: ${{ matrix.build.generate && 'CM' || 'AM' }} ${{ matrix.build.name }}
     runs-on: 'ubuntu-latest'
     container: ${{ matrix.build.container }}
-    timeout-minutes: 90
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -111,10 +113,26 @@ jobs:
             install_steps: mbedtls
             configure: CC=clang LDFLAGS="-Wl,-rpath,$HOME/mbedtls/lib" --with-mbedtls=$HOME/mbedtls --enable-debug
 
+          - name: mbedtls
+            install_packages: libnghttp2-dev
+            install_steps: mbedtls
+            PKG_CONFIG_PATH: '$HOME/mbedtls/lib/pkgconfig'  # Requires v3.6.0 or upper
+            generate: -DCURL_USE_MBEDTLS=ON -DENABLE_DEBUG=ON
+
+          - name: mbedtls-pkg
+            install_packages: libnghttp2-dev libmbedtls-dev
+            generate: -DCURL_USE_MBEDTLS=ON -DENABLE_DEBUG=ON -DCURL_USE_PKGCONFIG=OFF
+
           - name: msh3
             install_packages: zlib1g-dev
             install_steps: quictls msh3
             configure: LDFLAGS="-Wl,-rpath,$HOME/msh3/lib -Wl,-rpath,$HOME/quictls/lib" --with-msh3=$HOME/msh3 --with-openssl=$HOME/quictls --enable-debug
+
+          - name: msh3
+            install_packages: zlib1g-dev
+            install_steps: quictls msh3 skipall
+            PKG_CONFIG_PATH: '$HOME/msh3/lib/pkgconfig'  # Broken as of v0.6.0
+            generate: -DOPENSSL_ROOT_DIR=$HOME/quictls -DUSE_MSH3=ON -DMSH3_INCLUDE_DIR=$HOME/msh3/include -DMSH3_LIBRARY=$HOME/msh3/lib/libmsh3.so -DENABLE_DEBUG=ON
 
           - name: awslc
             install_packages: zlib1g-dev
@@ -221,6 +239,12 @@ jobs:
             install_steps: rust rustls pytest
             configure: --with-rustls=$HOME/rustls --enable-debug
 
+          - name: rustls
+            install_packages: libpsl-dev
+            install_steps: rust rustls skipall
+            PKG_CONFIG_PATH: '$HOME/rustls/lib/pkgconfig'  # Not built as of v0.14.0
+            generate: -DCURL_USE_RUSTLS=ON -DRUSTLS_INCLUDE_DIR=$HOME/rustls/include -DRUSTLS_LIBRARY=$HOME/rustls/lib/librustls.a -DENABLE_DEBUG=ON
+
           - name: IntelC !SSL
             install_packages: zlib1g-dev
             install_steps: intel
@@ -254,7 +278,10 @@ jobs:
 
       - if: startsWith(matrix.build.container, 'alpine')
         run: |
-          apk add --no-cache build-base autoconf automake libtool perl openssl-dev libssh2-dev zlib-dev brotli-dev zstd-dev libidn2-dev openldap-dev heimdal-dev libpsl-dev py3-impacket py3-asn1 py3-six py3-pycryptodomex perl-time-hires openssh stunnel sudo git
+          apk add --no-cache build-base autoconf automake libtool perl openssl-dev libssh2-dev \
+            zlib-dev brotli-dev zstd-dev libidn2-dev openldap-dev heimdal-dev libpsl-dev \
+            py3-impacket py3-asn1 py3-six py3-pycryptodomex \
+            perl-time-hires openssh stunnel sudo git
         name: 'install dependencies'
 
       - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4
@@ -286,7 +313,7 @@ jobs:
           cache-name: cache-bearssl
         with:
           path: /home/runner/bearssl
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-bearssl-${{ env.bearssl-version }}
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.bearssl-version }}
 
       - name: 'build bearssl'
         if: contains(matrix.build.install_steps, 'bearssl') && steps.cache-bearssl.outputs.cache-hit != 'true'
@@ -307,7 +334,7 @@ jobs:
           cache-name: cache-libressl
         with:
           path: /home/runner/libressl
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-libressl-${{ env.libressl-version }}
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.libressl-version }}
 
       - name: 'build libressl'
         if: contains(matrix.build.install_steps, 'libressl') && steps.cache-libressl.outputs.cache-hit != 'true'
@@ -326,15 +353,14 @@ jobs:
           cache-name: cache-wolfssl-all
         with:
           path: /home/runner/wolfssl-all
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.libressl-version }}
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.wolfssl-version }}
 
       - name: 'build wolfssl (all)'
         if: contains(matrix.build.install_steps, 'wolfssl-all') && steps.cache-wolfssl-all.outputs.cache-hit != 'true'
         run: |
-          source .github/scripts/VERSIONS
-          curl -LOsSf --retry 6 --retry-connrefused --max-time 999 https://github.com/wolfSSL/wolfssl/archive/v$WOLFSSL_VER-stable.tar.gz
-          tar -xzf v$WOLFSSL_VER-stable.tar.gz
-          cd wolfssl-$WOLFSSL_VER-stable
+          curl -LOsSf --retry 6 --retry-connrefused --max-time 999 https://github.com/wolfSSL/wolfssl/archive/v${{ env.wolfssl-version }}-stable.tar.gz
+          tar -xzf v${{ env.wolfssl-version }}-stable.tar.gz
+          cd wolfssl-${{ env.wolfssl-version }}-stable
           ./autogen.sh
           ./configure --disable-dependency-tracking --enable-tls13 --enable-harden --prefix=$HOME/wolfssl-all --enable-all
           make install
@@ -347,15 +373,14 @@ jobs:
           cache-name: cache-wolfssl-opensslextra
         with:
           path: /home/runner/wolfssl-opensslextra
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.libressl-version }}
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.wolfssl-version }}
 
       - name: 'build wolfssl (opensslextra)'
         if: contains(matrix.build.install_steps, 'wolfssl-opensslextra') && steps.cache-wolfssl-opensslextra.outputs.cache-hit != 'true'
         run: |
-          source .github/scripts/VERSIONS
-          curl -LOsSf --retry 6 --retry-connrefused --max-time 999 https://github.com/wolfSSL/wolfssl/archive/v$WOLFSSL_VER-stable.tar.gz
-          tar -xzf v$WOLFSSL_VER-stable.tar.gz
-          cd wolfssl-$WOLFSSL_VER-stable
+          curl -LOsSf --retry 6 --retry-connrefused --max-time 999 https://github.com/wolfSSL/wolfssl/archive/v${{ env.wolfssl-version }}-stable.tar.gz
+          tar -xzf v${{ env.wolfssl-version }}-stable.tar.gz
+          cd wolfssl-${{ env.wolfssl-version }}-stable
           ./autogen.sh
           ./configure --disable-dependency-tracking --enable-tls13 --enable-harden --prefix=$HOME/wolfssl-opensslextra --enable-opensslextra
           make install
@@ -368,15 +393,18 @@ jobs:
           cache-name: cache-mbedtls
         with:
           path: /home/runner/mbedtls
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-mbedtls-${{ env.mbedtls-version }}
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.mbedtls-version }}
 
       - name: 'build mbedtls'
         if: contains(matrix.build.install_steps, 'mbedtls') && steps.cache-mbedtls.outputs.cache-hit != 'true'
         run: |
-          git clone --quiet --depth=1 -b v${{ env.mbedtls-version }} https://github.com/ARMmbed/mbedtls
+          git clone --quiet --depth=1 -b v${{ env.mbedtls-version }} https://github.com/Mbed-TLS/mbedtls
           cd mbedtls
-          git submodule update --init
-          make DESTDIR=$HOME/mbedtls install
+          git submodule update --init --depth=1
+          cmake -B . -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_PREFIX=$HOME/mbedtls \
+            -DENABLE_PROGRAMS=OFF -DENABLE_TESTING=OFF
+          cmake --build .
+          cmake --install .
 
       - name: cache openssl3
         if: contains(matrix.build.install_steps, 'openssl3')
@@ -426,7 +454,7 @@ jobs:
           cache-name: cache-quictls
         with:
           path: /home/runner/quictls
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-quictls-${{ env.quictls-version }}
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.quictls-version }}
 
       - name: 'build quictls'
         if: contains(matrix.build.install_steps, 'quictls') && steps.cache-quictls.outputs.cache-hit != 'true'
@@ -444,7 +472,7 @@ jobs:
           cache-name: cache-msh3
         with:
           path: /home/runner/msh3
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-msh3-${{ env.msh3-version }}
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.msh3-version }}
 
       - name: 'build msh3'
         if: contains(matrix.build.install_steps, 'msh3') && steps.cache-msh3.outputs.cache-hit != 'true'
@@ -474,16 +502,8 @@ jobs:
           mkdir aws-lc-${{ env.awslc-version }}-build
           cd aws-lc-${{ env.awslc-version }}-build
           cmake -G Ninja -DCMAKE_INSTALL_PREFIX=$HOME/awslc ../aws-lc-${{ env.awslc-version }}
-          cmake --build . --parallel 5
+          cmake --build .
           cmake --install .
-
-      - if: contains(matrix.build.install_steps, 'rust')
-        run: |
-          cd $HOME
-          curl -sSf --compressed https://sh.rustup.rs/ | sh -s -- -y
-          source $HOME/.cargo/env
-          rustup toolchain install nightly
-        name: 'install rust'
 
       - name: cache rustls
         if: contains(matrix.build.install_steps, 'rustls')
@@ -493,7 +513,15 @@ jobs:
           cache-name: cache-rustls
         with:
           path: /home/runner/rustls
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-rustls-${{ env.rustls-version }}
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.rustls-version }}
+
+      - name: 'install rust'
+        if: contains(matrix.build.install_steps, 'rust') && steps.cache-rustls.outputs.cache-hit != 'true'
+        run: |
+          cd $HOME
+          curl -sSf --compressed https://sh.rustup.rs/ | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup toolchain install nightly
 
       - name: 'build rustls'
         if: contains(matrix.build.install_steps, 'rustls') && steps.cache-rustls.outputs.cache-hit != 'true'
@@ -560,8 +588,11 @@ jobs:
       - name: 'configure'
         run: |
           [[ '${{ matrix.build.install_steps }}' = *'awslc'* ]] && sudo apt remove --yes libssl-dev
+          if [ -n '${{ matrix.build.PKG_CONFIG_PATH }}' ]; then
+            export PKG_CONFIG_PATH="${{ matrix.build.PKG_CONFIG_PATH }}"
+          fi
           if [ -n '${{ matrix.build.generate }}' ]; then
-            cmake -G Ninja \
+            cmake -B . -G Ninja \
               -DCMAKE_C_COMPILER_TARGET=$(uname -m)-pc-linux-gnu -DBUILD_STATIC_LIBS=ON \
               -DCMAKE_UNITY_BUILD=ON -DCURL_TEST_BUNDLES=ON -DCURL_WERROR=ON \
               -DCURL_BROTLI=ON -DCURL_ZSTD=ON \
@@ -576,6 +607,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cat config.log CMakeFiles/CMakeConfigureLog.yaml 2>/dev/null || true
 
+      - name: 'curl_config.h'
+        run: |
+          echo '::group::raw'; cat lib/curl_config.h || true; echo '::endgroup::'
+          cat lib/curl_config.h | grep -F '#define' | sort || true
+
       - name: 'test configs'
         run: |
           cat tests/config || true
@@ -584,7 +620,7 @@ jobs:
       - name: 'build'
         run: |
           if [ -n '${{ matrix.build.generate }}' ]; then
-            ${{ matrix.build.make-prefix }} cmake --build . --parallel 5 --verbose
+            ${{ matrix.build.make-prefix }} cmake --build . --verbose
           else
             ${{ matrix.build.make-prefix }} make V=1
           fi
@@ -611,7 +647,7 @@ jobs:
         if: ${{ matrix.build.install_steps != 'skipall' }}
         run: |
           if [ -n '${{ matrix.build.generate }}' ]; then
-            cmake --build . --parallel 5 --verbose --target testdeps
+            cmake --build . --verbose --target testdeps
           else
             make V=1 -C tests
           fi
@@ -648,7 +684,7 @@ jobs:
       - name: 'build examples'
         run: |
           if [ -n '${{ matrix.build.generate }}' ]; then
-            ${{ matrix.build.make-prefix }} cmake --build . --parallel 5 --verbose --target curl-examples
+            ${{ matrix.build.make-prefix }} cmake --build . --verbose --target curl-examples
           else
             ${{ matrix.build.make-prefix }} make V=1 examples
           fi
