@@ -50,7 +50,6 @@ int main(void)
   int flags = 0;
   if(0 != fcntl(0, F_SETFL, flags | O_NONBLOCK))
     return 1;
-  ;
   return 0;
 }
 #endif
@@ -71,7 +70,7 @@ int main(void)
 #include <netdb.h>
 int main(void)
 {
-  char *address = "example.com";
+  const char *address = "example.com";
   int length = 0;
   int type = 0;
   struct hostent h;
