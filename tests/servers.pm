@@ -29,6 +29,7 @@
 package servers;
 
 use IO::Socket;
+use Time::HiRes;
 use strict;
 use warnings;
 
@@ -219,47 +220,47 @@ sub initserverconfig {
 # possible servers.
 #
 sub init_serverpidfile_hash {
-  for my $proto (('ftp', 'gopher', 'http', 'imap', 'pop3', 'smtp', 'http/2', 'http/3')) {
-    for my $ssl (('', 's')) {
-      for my $ipvnum ((4, 6)) {
-        for my $idnum ((1, 2, 3)) {
-          my $serv = servername_id("$proto$ssl", $ipvnum, $idnum);
-          my $pidf = server_pidfilename("$LOGDIR/$PIDDIR", "$proto$ssl",
-                                        $ipvnum, $idnum);
-          $serverpidfile{$serv} = $pidf;
-          my $portf = server_portfilename("$LOGDIR/$PIDDIR", "$proto$ssl",
-                                          $ipvnum, $idnum);
-          $serverportfile{$serv} = $portf;
+    for my $proto (('ftp', 'gopher', 'http', 'imap', 'pop3', 'smtp', 'http/2', 'http/3')) {
+        for my $ssl (('', 's')) {
+            for my $ipvnum ((4, 6)) {
+                for my $idnum ((1, 2, 3)) {
+                    my $serv = servername_id("$proto$ssl", $ipvnum, $idnum);
+                    my $pidf = server_pidfilename("$LOGDIR/$PIDDIR", "$proto$ssl",
+                                                  $ipvnum, $idnum);
+                    $serverpidfile{$serv} = $pidf;
+                    my $portf = server_portfilename("$LOGDIR/$PIDDIR", "$proto$ssl",
+                                                    $ipvnum, $idnum);
+                    $serverportfile{$serv} = $portf;
+                }
+            }
         }
-      }
     }
-  }
-  for my $proto (('tftp', 'sftp', 'socks', 'ssh', 'rtsp', 'httptls',
-                  'dict', 'smb', 'smbs', 'telnet', 'mqtt', 'https-mtls',
-                  'dns')) {
-    for my $ipvnum ((4, 6)) {
-      for my $idnum ((1, 2)) {
-        my $serv = servername_id($proto, $ipvnum, $idnum);
-        my $pidf = server_pidfilename("$LOGDIR/$PIDDIR", $proto, $ipvnum,
-                                      $idnum);
-        $serverpidfile{$serv} = $pidf;
-        my $portf = server_portfilename("$LOGDIR/$PIDDIR", $proto, $ipvnum,
-                                        $idnum);
-        $serverportfile{$serv} = $portf;
-      }
+    for my $proto (('tftp', 'sftp', 'socks', 'ssh', 'rtsp', 'httptls',
+                    'dict', 'smb', 'smbs', 'telnet', 'mqtt', 'https-mtls',
+                    'dns')) {
+        for my $ipvnum ((4, 6)) {
+            for my $idnum ((1, 2)) {
+                my $serv = servername_id($proto, $ipvnum, $idnum);
+                my $pidf = server_pidfilename("$LOGDIR/$PIDDIR", $proto, $ipvnum,
+                                              $idnum);
+                $serverpidfile{$serv} = $pidf;
+                my $portf = server_portfilename("$LOGDIR/$PIDDIR", $proto, $ipvnum,
+                                                $idnum);
+                $serverportfile{$serv} = $portf;
+            }
+        }
     }
-  }
-  for my $proto (('http', 'imap', 'pop3', 'smtp', 'http/2', 'http/3')) {
-    for my $ssl (('', 's')) {
-      my $serv = servername_id("$proto$ssl", "unix", 1);
-      my $pidf = server_pidfilename("$LOGDIR/$PIDDIR", "$proto$ssl",
-                                    "unix", 1);
-      $serverpidfile{$serv} = $pidf;
-      my $portf = server_portfilename("$LOGDIR/$PIDDIR", "$proto$ssl",
-                                      "unix", 1);
-      $serverportfile{$serv} = $portf;
+    for my $proto (('http', 'imap', 'pop3', 'smtp', 'http/2', 'http/3')) {
+        for my $ssl (('', 's')) {
+            my $serv = servername_id("$proto$ssl", "unix", 1);
+            my $pidf = server_pidfilename("$LOGDIR/$PIDDIR", "$proto$ssl",
+                                          "unix", 1);
+            $serverpidfile{$serv} = $pidf;
+            my $portf = server_portfilename("$LOGDIR/$PIDDIR", "$proto$ssl",
+                                            "unix", 1);
+            $serverportfile{$serv} = $portf;
+        }
     }
-  }
 }
 
 
@@ -1024,6 +1025,7 @@ sub verifytelnet {
 
 my %protofunc = ('http' => \&verifyhttp,
                  'https' => \&verifyhttp,
+                 'https-mtls' => \&verifypid,
                  'rtsp' => \&verifyrtsp,
                  'ftp' => \&verifyftp,
                  'pop3' => \&verifyftp,
@@ -1145,8 +1147,16 @@ sub runhttpserver {
 
     # where is it?
     my $port = 0;
-    if(!$port_or_path) {
+    my $waits = 0;
+    # wait at max 15 seconds to the port file to become valid
+    while(!$port_or_path && ($waits < (15 * 10))) {
         $port = $port_or_path = pidfromfile($portfile);
+        Time::HiRes::sleep(0.1) unless $port_or_path;
+        ++$waits;
+    }
+    if(!$port) {
+        logmsg "RUN: failed waiting for server to produce port file $portfile\n";
+        return (1, 0, 0, 0);
     }
 
     if($verb) {
@@ -2352,7 +2362,7 @@ sub startservers {
         $what =~ s/[^a-z0-9\/-]//g;
 
         my $certfile;
-        if($what =~ /^(ftp|gopher|http|imap|pop3|smtp)s((\d*)(-ipv6|-unix|))$/) {
+        if($what =~ /^(ftp|gopher|http|imap|pop3|smtp)s|https-mtls((\d*)(-ipv6|-unix|))$/) {
             $certfile = ($whatlist[1]) ? $whatlist[1] : 'certs/test-localhost.pem';
         }
 
