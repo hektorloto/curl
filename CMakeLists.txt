@@ -88,6 +88,10 @@ elseif(WIN32 AND WINCE AND CMAKE_C_COMPILER_ID STREQUAL "GNU")  # mingw32ce buil
   set(CMAKE_RC_COMPILE_OBJECT "<CMAKE_RC_COMPILER> -O coff <DEFINES> <INCLUDES> <FLAGS> <SOURCE> <OBJECT>")
   enable_language(RC)
 
+  # To compile long long integer literals
+  set_property(DIRECTORY APPEND PROPERTY COMPILE_OPTIONS "-std=gnu99")
+  string(APPEND CMAKE_REQUIRED_FLAGS " -std=gnu99")
+
   set(CMAKE_C_COMPILE_OPTIONS_PIC "")  # CMake sets it to '-fPIC', confusing the toolchain and breaking builds. Zap it.
 
   set(CMAKE_STATIC_LIBRARY_PREFIX "lib")
@@ -2030,9 +2034,9 @@ function(curl_transform_makefile_inc _input_file _output_file)
   string(REPLACE "$(top_srcdir)"   "\${PROJECT_SOURCE_DIR}" _makefile_inc_text ${_makefile_inc_text})
   string(REPLACE "$(top_builddir)" "\${PROJECT_BINARY_DIR}" _makefile_inc_text ${_makefile_inc_text})
 
-  string(REGEX REPLACE "\\\\\n" "!π!α!" _makefile_inc_text ${_makefile_inc_text})
+  string(REGEX REPLACE "\\\\\n" "!^!^!" _makefile_inc_text ${_makefile_inc_text})
   string(REGEX REPLACE "([a-zA-Z_][a-zA-Z0-9_]*)[\t ]*=[\t ]*([^\n]*)" "set(\\1 \\2)" _makefile_inc_text ${_makefile_inc_text})
-  string(REPLACE "!π!α!" "\n" _makefile_inc_text ${_makefile_inc_text})
+  string(REPLACE "!^!^!" "\n" _makefile_inc_text ${_makefile_inc_text})
 
   # Replace $() with ${}
   string(REGEX REPLACE "\\$\\(([a-zA-Z_][a-zA-Z0-9_]*)\\)" "\${\\1}" _makefile_inc_text ${_makefile_inc_text})
