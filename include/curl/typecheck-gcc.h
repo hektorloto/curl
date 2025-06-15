@@ -178,7 +178,7 @@
               _curl_easy_getinfo_err_curl_slist();                      \
           if(curlcheck_tlssessioninfo_info(info))                       \
             if(!curlcheck_arr((arg), struct curl_tlssessioninfo *))     \
-              _curl_easy_getinfo_err_curl_tlssesssioninfo();            \
+              _curl_easy_getinfo_err_curl_tlssessioninfo();            \
           if(curlcheck_certinfo_info(info))                             \
             if(!curlcheck_arr((arg), struct curl_certinfo *))           \
               _curl_easy_getinfo_err_curl_certinfo();                   \
@@ -295,7 +295,7 @@ CURLWARNING(_curl_easy_getinfo_err_double,
             "curl_easy_getinfo expects a pointer to double")
 CURLWARNING(_curl_easy_getinfo_err_curl_slist,
             "curl_easy_getinfo expects a pointer to 'struct curl_slist *'")
-CURLWARNING(_curl_easy_getinfo_err_curl_tlssesssioninfo,
+CURLWARNING(_curl_easy_getinfo_err_curl_tlssessioninfo,
             "curl_easy_getinfo expects a pointer to "
             "'struct curl_tlssessioninfo *'")
 CURLWARNING(_curl_easy_getinfo_err_curl_certinfo,
@@ -402,6 +402,8 @@ CURLWARNING(_curl_easy_getinfo_err_curl_off_t,
    (option) == CURLOPT_SSLKEY ||                                        \
    (option) == CURLOPT_SSLKEYTYPE ||                                    \
    (option) == CURLOPT_SSL_CIPHER_LIST ||                               \
+   (option) == CURLOPT_SSL_EC_CURVES ||                                 \
+   (option) == CURLOPT_SSL_SIGNATURE_ALGORITHMS ||                      \
    (option) == CURLOPT_TLS13_CIPHERS ||                                 \
    (option) == CURLOPT_TLSAUTH_PASSWORD ||                              \
    (option) == CURLOPT_TLSAUTH_TYPE ||                                  \
@@ -413,7 +415,6 @@ CURLWARNING(_curl_easy_getinfo_err_curl_off_t,
    (option) == CURLOPT_AWS_SIGV4 ||                                     \
    (option) == CURLOPT_USERPWD ||                                       \
    (option) == CURLOPT_XOAUTH2_BEARER ||                                \
-   (option) == CURLOPT_SSL_EC_CURVES ||                                 \
    0)
 
 /* evaluates to true if option takes a curl_write_callback argument */
