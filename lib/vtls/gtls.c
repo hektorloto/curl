@@ -42,7 +42,7 @@
 
 #include "../urldata.h"
 #include "../sendf.h"
-#include "../inet_pton.h"
+#include "../curlx/inet_pton.h"
 #include "keylog.h"
 #include "gtls.h"
 #include "vtls.h"
@@ -55,7 +55,7 @@
 #include "../select.h"
 #include "../strcase.h"
 #include "../strdup.h"
-#include "../warnless.h"
+#include "../curlx/warnless.h"
 #include "x509asn1.h"
 #include "../multiif.h"
 #include "../curl_printf.h"
@@ -91,21 +91,21 @@ static ssize_t gtls_push(void *s, const void *buf, size_t blen)
   struct gtls_ssl_backend_data *backend =
     (struct gtls_ssl_backend_data *)connssl->backend;
   struct Curl_easy *data = CF_DATA_CURRENT(cf);
-  ssize_t nwritten;
+  size_t nwritten;
   CURLcode result;
 
   DEBUGASSERT(data);
-  nwritten = Curl_conn_cf_send(cf->next, data, buf, blen, FALSE, &result);
-  CURL_TRC_CF(data, cf, "gtls_push(len=%zu) -> %zd, err=%d",
-              blen, nwritten, result);
+  result = Curl_conn_cf_send(cf->next, data, buf, blen, FALSE, &nwritten);
+  CURL_TRC_CF(data, cf, "gtls_push(len=%zu) -> %d, %zu",
+              blen, result, nwritten);
   backend->gtls.io_result = result;
-  if(nwritten < 0) {
+  if(result) {
     /* !checksrc! disable ERRNOVAR 1 */
     gnutls_transport_set_errno(backend->gtls.session,
                                (CURLE_AGAIN == result) ? EAGAIN : EINVAL);
-    nwritten = -1;
+    return -1;
   }
-  return nwritten;
+  return (ssize_t)nwritten;
 }
 
 static ssize_t gtls_pull(void *s, void *buf, size_t blen)
@@ -115,7 +115,7 @@ static ssize_t gtls_pull(void *s, void *buf, size_t blen)
   struct gtls_ssl_backend_data *backend =
     (struct gtls_ssl_backend_data *)connssl->backend;
   struct Curl_easy *data = CF_DATA_CURRENT(cf);
-  ssize_t nread;
+  size_t nread;
   CURLcode result;
 
   DEBUGASSERT(data);
@@ -129,19 +129,19 @@ static ssize_t gtls_pull(void *s, void *buf, size_t blen)
     }
   }
 
-  nread = Curl_conn_cf_recv(cf->next, data, buf, blen, &result);
-  CURL_TRC_CF(data, cf, "glts_pull(len=%zu) -> %zd, err=%d",
-              blen, nread, result);
+  result = Curl_conn_cf_recv(cf->next, data, buf, blen, &nread);
+  CURL_TRC_CF(data, cf, "glts_pull(len=%zu) -> %d, %zd",
+              blen, result, nread);
   backend->gtls.io_result = result;
-  if(nread < 0) {
+  if(result) {
     /* !checksrc! disable ERRNOVAR 1 */
     gnutls_transport_set_errno(backend->gtls.session,
                                (CURLE_AGAIN == result) ? EAGAIN : EINVAL);
-    nread = -1;
+    return -1;
   }
   else if(nread == 0)
     connssl->peer_closed = TRUE;
-  return nread;
+  return (ssize_t)nread;
 }
 
 /* gtls_init()
@@ -233,7 +233,7 @@ static void unload_file(gnutls_datum_t data)
 }
 
 
-/* this function does a SSL/TLS (re-)handshake */
+/* this function does an SSL/TLS (re-)handshake */
 static CURLcode handshake(struct Curl_cfilter *cf,
                           struct Curl_easy *data)
 {
@@ -426,7 +426,7 @@ CURLcode Curl_gtls_shared_creds_create(struct Curl_easy *data,
   }
 
   shared->refcount = 1;
-  shared->time = Curl_now();
+  shared->time = curlx_now();
   *pcreds = shared;
   return CURLE_OK;
 }
@@ -540,8 +540,8 @@ static bool gtls_shared_creds_expired(const struct Curl_easy *data,
                                       const struct gtls_shared_creds *sc)
 {
   const struct ssl_general_config *cfg = &data->set.general_ssl;
-  struct curltime now = Curl_now();
-  timediff_t elapsed_ms = Curl_timediff(now, sc->time);
+  struct curltime now = curlx_now();
+  timediff_t elapsed_ms = curlx_timediff(now, sc->time);
   timediff_t timeout_ms = cfg->ca_cache_timeout * (timediff_t)1000;
 
   if(timeout_ms < 0)
@@ -794,18 +794,18 @@ static CURLcode gtls_set_priority(struct Curl_cfilter *cf,
   CURLcode result = CURLE_OK;
   int rc;
 
-  Curl_dyn_init(&buf, 4096);
+  curlx_dyn_init(&buf, 4096);
 
 #ifdef USE_GNUTLS_SRP
   if(conn_config->username) {
     /* Only add SRP to the cipher list if SRP is requested. Otherwise
      * GnuTLS will disable TLS 1.3 support. */
-    result = Curl_dyn_add(&buf, priority);
+    result = curlx_dyn_add(&buf, priority);
     if(!result)
-      result = Curl_dyn_add(&buf, ":" GNUTLS_SRP);
+      result = curlx_dyn_add(&buf, ":" GNUTLS_SRP);
     if(result)
       goto out;
-    priority = Curl_dyn_ptr(&buf);
+    priority = curlx_dyn_ptr(&buf);
   }
 #endif
 
@@ -814,15 +814,15 @@ static CURLcode gtls_set_priority(struct Curl_cfilter *cf,
        (conn_config->cipher_list[0] == '-') ||
        (conn_config->cipher_list[0] == '!')) {
        /* add it to out own */
-      if(!Curl_dyn_len(&buf)) {  /* not added yet */
-        result = Curl_dyn_add(&buf, priority);
+      if(!curlx_dyn_len(&buf)) {  /* not added yet */
+        result = curlx_dyn_add(&buf, priority);
         if(result)
           goto out;
       }
-      result = Curl_dyn_addf(&buf, ":%s", conn_config->cipher_list);
+      result = curlx_dyn_addf(&buf, ":%s", conn_config->cipher_list);
       if(result)
         goto out;
-      priority = Curl_dyn_ptr(&buf);
+      priority = curlx_dyn_ptr(&buf);
     }
     else /* replace our own completely */
       priority = conn_config->cipher_list;
@@ -836,7 +836,7 @@ static CURLcode gtls_set_priority(struct Curl_cfilter *cf,
   }
 
 out:
-  Curl_dyn_free(&buf);
+  curlx_dyn_free(&buf);
   return result;
 }
 
@@ -1948,48 +1948,49 @@ static bool gtls_data_pending(struct Curl_cfilter *cf,
   return FALSE;
 }
 
-static ssize_t gtls_send(struct Curl_cfilter *cf,
-                         struct Curl_easy *data,
-                         const void *buf,
-                         size_t blen,
-                         CURLcode *curlcode)
+static CURLcode gtls_send(struct Curl_cfilter *cf,
+                          struct Curl_easy *data,
+                          const void *buf,
+                          size_t blen,
+                          size_t *pnwritten)
 {
   struct ssl_connect_data *connssl = cf->ctx;
   struct gtls_ssl_backend_data *backend =
     (struct gtls_ssl_backend_data *)connssl->backend;
-  ssize_t rc;
-  size_t nwritten, total_written = 0;
+  CURLcode result = CURLE_OK;
+  ssize_t nwritten;
+  size_t remain = blen;
 
   (void)data;
   DEBUGASSERT(backend);
+  *pnwritten = 0;
 
-  while(blen) {
+  while(remain) {
     backend->gtls.io_result = CURLE_OK;
-    rc = gnutls_record_send(backend->gtls.session, buf, blen);
+    nwritten = gnutls_record_send(backend->gtls.session, buf, remain);
 
-    if(rc < 0) {
-      if(total_written && (rc == GNUTLS_E_AGAIN)) {
-        *curlcode = CURLE_OK;
-        rc = (ssize_t)total_written;
+    if(nwritten >= 0) {
+      *pnwritten += (size_t)nwritten;
+      DEBUGASSERT((size_t)nwritten <= remain);
+      buf = (char *)CURL_UNCONST(buf) + (size_t)nwritten;
+      remain -= (size_t)nwritten;
+    }
+    else {
+      if(*pnwritten && (nwritten == GNUTLS_E_AGAIN)) {
+        result = CURLE_OK;
         goto out;
       }
-      *curlcode = (rc == GNUTLS_E_AGAIN) ?
+      result = (nwritten == GNUTLS_E_AGAIN) ?
         CURLE_AGAIN :
         (backend->gtls.io_result ? backend->gtls.io_result : CURLE_SEND_ERROR);
-
-      rc = -1;
       goto out;
     }
-    nwritten = (size_t)rc;
-    total_written += nwritten;
-    DEBUGASSERT(nwritten <= blen);
-    buf = (char *)CURL_UNCONST(buf) + nwritten;
-    blen -= nwritten;
   }
-  rc = total_written;
 
 out:
-  return rc;
+  CURL_TRC_CF(data, cf, "gtls_send(len=%zu) -> %d, %zu",
+              blen, result, *pnwritten);
+  return result;
 }
 
 /*
@@ -2095,50 +2096,49 @@ static void gtls_close(struct Curl_cfilter *cf,
 #endif
 }
 
-static ssize_t gtls_recv(struct Curl_cfilter *cf,
-                         struct Curl_easy *data,
-                         char *buf,
-                         size_t buffersize,
-                         CURLcode *curlcode)
+static CURLcode gtls_recv(struct Curl_cfilter *cf,
+                          struct Curl_easy *data,
+                          char *buf, size_t blen,
+                          size_t *pnread)
 {
   struct ssl_connect_data *connssl = cf->ctx;
   struct gtls_ssl_backend_data *backend =
     (struct gtls_ssl_backend_data *)connssl->backend;
-  ssize_t ret;
+  CURLcode result = CURLE_OK;
+  ssize_t nread;
 
   (void)data;
   DEBUGASSERT(backend);
 
-  ret = gnutls_record_recv(backend->gtls.session, buf, buffersize);
-  if((ret == GNUTLS_E_AGAIN) || (ret == GNUTLS_E_INTERRUPTED)) {
-    *curlcode = CURLE_AGAIN;
-    ret = -1;
-    goto out;
-  }
+  nread = gnutls_record_recv(backend->gtls.session, buf, blen);
 
-  if(ret == GNUTLS_E_REHANDSHAKE) {
-    /* BLOCKING call, this is bad but a work-around for now. Fixing this "the
-       proper way" takes a whole lot of work. */
-    CURLcode result = handshake(cf, data);
-    if(result)
-      *curlcode = result;
-    else
-      *curlcode = CURLE_AGAIN; /* then return as if this was a wouldblock */
-    ret = -1;
-    goto out;
-  }
-
-  if(ret < 0) {
-    failf(data, "GnuTLS recv error (%d): %s",
-          (int)ret, gnutls_strerror((int)ret));
-    *curlcode = backend->gtls.io_result ?
-      backend->gtls.io_result : CURLE_RECV_ERROR;
-    ret = -1;
-    goto out;
+  if(nread >= 0)
+    *pnread = (size_t)nread;
+  else {
+    if((nread == GNUTLS_E_AGAIN) || (nread == GNUTLS_E_INTERRUPTED)) {
+      result = CURLE_AGAIN;
+      goto out;
+    }
+    else if(nread == GNUTLS_E_REHANDSHAKE) {
+      /* BLOCKING call, this is bad but a work-around for now. Fixing this "the
+         proper way" takes a whole lot of work. */
+      result = handshake(cf, data);
+      if(!result)
+        result = CURLE_AGAIN; /* then return as if this was a wouldblock */
+      goto out;
+    }
+    else {
+      failf(data, "GnuTLS recv error (%d): %s",
+            (int)nread, gnutls_strerror((int)nread));
+      result = backend->gtls.io_result ?
+        backend->gtls.io_result : CURLE_RECV_ERROR;
+      goto out;
+    }
   }
 
 out:
-  return ret;
+  CURL_TRC_CF(data, cf, "gtls_recv(len=%zu) -> 0, %zu", blen, *pnread);
+  return result;
 }
 
 size_t Curl_gtls_version(char *buffer, size_t size)
@@ -2210,7 +2210,6 @@ const struct Curl_ssl Curl_ssl_gnutls = {
   NULL,                          /* set_engine */
   NULL,                          /* set_engine_default */
   NULL,                          /* engines_list */
-  NULL,                          /* false_start */
   gtls_sha256sum,                /* sha256sum */
   gtls_recv,                     /* recv decrypted data */
   gtls_send,                     /* send data to encrypt */

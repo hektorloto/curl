@@ -21,7 +21,7 @@
  * SPDX-License-Identifier: curl
  *
  ***************************************************************************/
-#include "server_setup.h"
+#include "curl_setup.h"
 
 /* Purpose
  *
@@ -101,17 +101,10 @@
 #include <netdb.h>
 #endif
 
-#include "curlx.h" /* from the private lib dir */
-#include "inet_pton.h"
-#include "util.h"
-#include "server_sockaddr.h"
-#include "timediff.h"
-#include "warnless.h"
-
-#include "tool_binmode.h"
+#include <curlx.h> /* from the private lib dir */
 
 /* include memdebug.h last */
-#include "memdebug.h"
+#include <memdebug.h>
 
 /* buffer is this excessively large only to be able to support things like
   test 1003 which tests exceedingly large server response lines */
@@ -360,20 +353,20 @@ static void lograw(unsigned char *buffer, ssize_t len)
   for(i = 0; i < len; i++) {
     switch(ptr[i]) {
     case '\n':
-      msnprintf(optr, left, "\\n");
+      snprintf(optr, left, "\\n");
       width += 2;
       optr += 2;
       left -= 2;
       break;
     case '\r':
-      msnprintf(optr, left, "\\r");
+      snprintf(optr, left, "\\r");
       width += 2;
       optr += 2;
       left -= 2;
       break;
     default:
-      msnprintf(optr, left, "%c", (ISGRAPH(ptr[i]) ||
-                                   ptr[i] == 0x20) ? ptr[i] : '.');
+      snprintf(optr, left, "%c", (ISGRAPH(ptr[i]) ||
+                                  ptr[i] == 0x20) ? ptr[i] : '.');
       width++;
       optr++;
       left--;
@@ -1126,10 +1119,10 @@ static bool juggle(curl_socket_t *sockfdp,
     else if(!memcmp("PORT", buffer, 4)) {
       /* Question asking us what PORT number we are listening to.
          Replies to PORT with "IPv[num]/[port]" */
-      msnprintf((char *)buffer, sizeof(buffer), "%s/%hu\n",
-                ipv_inuse, server_port);
+      snprintf((char *)buffer, sizeof(buffer), "%s/%hu\n",
+               ipv_inuse, server_port);
       buffer_len = (ssize_t)strlen((char *)buffer);
-      msnprintf(data, sizeof(data), "PORT\n%04zx\n", buffer_len);
+      snprintf(data, sizeof(data), "PORT\n%04x\n", (int)buffer_len);
       if(!write_stdout(data, 10))
         return FALSE;
       if(!write_stdout(buffer, buffer_len))
@@ -1187,8 +1180,7 @@ static bool juggle(curl_socket_t *sockfdp,
       curl_socket_t newfd = accept(sockfd, NULL, NULL);
       if(CURL_SOCKET_BAD == newfd) {
         error = SOCKERRNO;
-        logmsg("accept(%" FMT_SOCKET_T ", NULL, NULL) "
-               "failed with error (%d) %s", sockfd, error, sstrerror(error));
+        logmsg("accept() failed with error (%d) %s", error, sstrerror(error));
       }
       else {
         logmsg("====> Client connect");
@@ -1204,7 +1196,7 @@ static bool juggle(curl_socket_t *sockfdp,
     nread_socket = sread(sockfd, buffer, sizeof(buffer));
 
     if(nread_socket > 0) {
-      msnprintf(data, sizeof(data), "DATA\n%04zx\n", nread_socket);
+      snprintf(data, sizeof(data), "DATA\n%04x\n", (int)nread_socket);
       if(!write_stdout(data, 10))
         return FALSE;
       if(!write_stdout(buffer, nread_socket))
@@ -1256,11 +1248,11 @@ static curl_socket_t sockfilt_sockdaemon(curl_socket_t sock,
       logmsg("setsockopt(SO_REUSEADDR) failed with error (%d) %s",
              error, sstrerror(error));
       if(maxretr) {
-        rc = wait_ms(delay);
+        rc = curlx_wait_ms(delay);
         if(rc) {
           /* should not happen */
           error = SOCKERRNO;
-          logmsg("wait_ms() failed with error (%d) %s",
+          logmsg("curlx_wait_ms() failed with error (%d) %s",
                  error, sstrerror(error));
           sclose(sock);
           return CURL_SOCKET_BAD;
@@ -1365,8 +1357,8 @@ static curl_socket_t sockfilt_sockdaemon(curl_socket_t sock,
   rc = listen(sock, 5);
   if(0 != rc) {
     error = SOCKERRNO;
-    logmsg("listen(%" FMT_SOCKET_T ", 5) failed with error (%d) %s",
-           sock, error, sstrerror(error));
+    logmsg("listen() failed with error (%d) %s",
+           error, sstrerror(error));
     sclose(sock);
     return CURL_SOCKET_BAD;
   }
@@ -1375,7 +1367,7 @@ static curl_socket_t sockfilt_sockdaemon(curl_socket_t sock,
 }
 
 
-int main(int argc, char *argv[])
+static int test_sockfilt(int argc, char *argv[])
 {
   srvr_sockaddr_union_t me;
   curl_socket_t sock = CURL_SOCKET_BAD;
@@ -1498,9 +1490,9 @@ int main(int argc, char *argv[])
     return 2;
 #endif
 
-  CURL_SET_BINMODE(stdin);
-  CURL_SET_BINMODE(stdout);
-  CURL_SET_BINMODE(stderr);
+  CURLX_SET_BINMODE(stdin);
+  CURLX_SET_BINMODE(stdout);
+  CURLX_SET_BINMODE(stderr);
 
   install_signal_handlers(false);
 

@@ -249,6 +249,13 @@ if(PICKY_COMPILER)
           -Wxor-used-as-pow                # clang 10.0  gcc 13.0
         )
       endif()
+      if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 15.0)
+        list(APPEND _picky_enable
+          -Wleading-whitespace=spaces      #             gcc 15.0
+          -Wtrailing-whitespace=any        #             gcc 15.0
+          -Wunterminated-string-initialization  #        gcc 15.0
+        )
+      endif()
     endif()
 
     #
@@ -309,8 +316,9 @@ if(PICKY_COMPILER)
     list(APPEND _picky "-wd4668")  # 'M' is not defined as a preprocessor macro, replacing with '0' for '#if/#elif' (in winbase.h)
     list(APPEND _picky "-wd4710")  # 'snprintf': function not inlined
     list(APPEND _picky "-wd4711")  # function 'A' selected for automatic inline expansion
-    list(APPEND _picky "-wd4746")  # volatile access of '<expression>' is subject to /volatile:<iso|ms> setting;
-                                   #   consider using __iso_volatile_load/store intrinsic functions (ARM64)
+    # volatile access of '<expression>' is subject to /volatile:<iso|ms> setting;
+    #   consider using __iso_volatile_load/store intrinsic functions (ARM64)
+    list(APPEND _picky "-wd4746")
     list(APPEND _picky "-wd4774")  # 'snprintf': format string expected in argument 3 is not a string literal
     list(APPEND _picky "-wd4820")  # 'A': 'N' bytes padding added after data member 'B'
     if(MSVC_VERSION GREATER_EQUAL 1900)
@@ -333,7 +341,7 @@ if(CMAKE_C_COMPILER_ID STREQUAL "Clang" AND MSVC)
         list(APPEND _picky_tmp "-clang:${_ccopt}")
       endif()
     endforeach()
-    set("${_wlist}" ${_picky_tmp})
+    set("${_wlist}" ${_picky_tmp})  # cmake-lint: disable=C0103
   endforeach()
 endif()
 

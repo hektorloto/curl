@@ -21,13 +21,16 @@
  * SPDX-License-Identifier: curl
  *
  ***************************************************************************/
-#include "server_setup.h"
+#include "curl_setup.h"
 
 #ifndef UNDER_CE
 #include <signal.h>
 #endif
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
+#endif
+#ifdef HAVE_NETINET_IN6_H
+#include <netinet/in6.h>
 #endif
 #ifdef _XOPEN_SOURCE_EXTENDED
 /* This define is "almost" required to build on HP-UX 11 */
@@ -37,38 +40,83 @@
 #include <netdb.h>
 #endif
 
-#ifdef MSDOS
-#include <dos.h>  /* delay() */
+#include <curlx.h> /* from the private lib dir */
+
+/* adjust for old MSVC */
+#if defined(_MSC_VER) && (_MSC_VER < 1900)
+#  define snprintf _snprintf
 #endif
 
 #ifdef _WIN32
-#include "strerror.h"
+#  define CURL_STRNICMP(p1, p2, n) _strnicmp(p1, p2, n)
+#elif defined(HAVE_STRCASECMP)
+#  ifdef HAVE_STRINGS_H
+#    include <strings.h>
+#  endif
+#  define CURL_STRNICMP(p1, p2, n) strncasecmp(p1, p2, n)
+#elif defined(HAVE_STRCMPI)
+#  define CURL_STRNICMP(p1, p2, n) strncmpi(p1, p2, n)
+#elif defined(HAVE_STRICMP)
+#  define CURL_STRNICMP(p1, p2, n) strnicmp(p1, p2, n)
+#else
+#  error "missing case insensitive comparison function"
 #endif
 
-#include "curlx.h" /* from the private lib dir */
-#include "util.h"
+enum {
+  DOCNUMBER_NOTHING    = -7,
+  DOCNUMBER_QUIT       = -6,
+  DOCNUMBER_BADCONNECT = -5,
+  DOCNUMBER_INTERNAL   = -4,
+  DOCNUMBER_CONNECT    = -3,
+  DOCNUMBER_WERULEZ    = -2,
+  DOCNUMBER_404        = -1
+};
 
-/* need init from main() */
-const char *pidname = NULL;
-const char *portname = NULL; /* none by default */
-const char *serverlogfile = NULL;
-int serverlogslocked;
-const char *configfile = NULL;
-const char *logdir = "log";
-char loglockfile[256];
+#define SERVERLOGS_LOCKDIR "lock"  /* within logdir */
+
+#include "timeval.h"
+
+#include <curl/curl.h> /* for curl_socket_t */
+
+#ifdef USE_UNIX_SOCKETS
+#ifdef HAVE_SYS_UN_H
+#include <sys/un.h> /* for sockaddr_un */
+#endif
+#endif /* USE_UNIX_SOCKETS */
+
+typedef union {
+  struct sockaddr      sa;
+  struct sockaddr_in   sa4;
 #ifdef USE_IPV6
-bool use_ipv6 = FALSE;
+  struct sockaddr_in6  sa6;
 #endif
-const char *ipv_inuse = "IPv4";
-unsigned short server_port = 0;
-const char *socket_type = "IPv4";
-int socket_domain = AF_INET;
+#ifdef USE_UNIX_SOCKETS
+  struct sockaddr_un   sau;
+#endif
+} srvr_sockaddr_union_t;
+
+/* global variables */
+static const char *srcpath = "."; /* pointing to the test dir */
+static const char *pidname = NULL;
+static const char *portname = NULL; /* none by default */
+static const char *serverlogfile = NULL;
+static int serverlogslocked;
+static const char *configfile = NULL;
+static const char *logdir = "log";
+static char loglockfile[256];
+#ifdef USE_IPV6
+static bool use_ipv6 = FALSE;
+#endif
+static const char *ipv_inuse = "IPv4";
+static unsigned short server_port = 0;
+static const char *socket_type = "IPv4";
+static int socket_domain = AF_INET;
 
 /* This function returns a pointer to STATIC memory. It converts the given
  * binary lump to a hex formatted string usable for output in logs or
  * whatever.
  */
-char *data_to_hex(char *data, size_t len)
+static char *data_to_hex(char *data, size_t len)
 {
   static char buf[256*3];
   size_t i;
@@ -82,7 +130,7 @@ char *data_to_hex(char *data, size_t len)
     if((data[i] >= 0x20) && (data[i] < 0x7f))
       *optr++ = *iptr++;
     else {
-      msnprintf(optr, 4, "%%%02x", *iptr++);
+      snprintf(optr, 4, "%%%02x", (unsigned char)*iptr++);
       optr += 3;
     }
   }
@@ -91,7 +139,7 @@ char *data_to_hex(char *data, size_t len)
   return buf;
 }
 
-void logmsg(const char *msg, ...)
+static void logmsg(const char *msg, ...)
 {
   va_list ap;
   char buffer[2048 + 1];
@@ -99,7 +147,7 @@ void logmsg(const char *msg, ...)
   struct curltime tv;
   time_t sec;
   struct tm *now;
-  char timebuf[20];
+  char timebuf[50];
   static time_t epoch_offset;
   static int    known_offset;
 
@@ -117,12 +165,19 @@ void logmsg(const char *msg, ...)
   /* !checksrc! disable BANNEDFUNC 1 */
   now = localtime(&sec); /* not thread safe but we don't care */
 
-  msnprintf(timebuf, sizeof(timebuf), "%02d:%02d:%02d.%06ld",
-            (int)now->tm_hour, (int)now->tm_min, (int)now->tm_sec,
-            (long)tv.tv_usec);
+  snprintf(timebuf, sizeof(timebuf), "%02d:%02d:%02d.%06ld",
+           (int)now->tm_hour, (int)now->tm_min, (int)now->tm_sec,
+           (long)tv.tv_usec);
 
   va_start(ap, msg);
-  mvsnprintf(buffer, sizeof(buffer), msg, ap);
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#endif
+  vsnprintf(buffer, sizeof(buffer), msg, ap);
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
   va_end(ap);
 
   do {
@@ -142,7 +197,7 @@ void logmsg(const char *msg, ...)
   }
 }
 
-void loghex(unsigned char *buffer, ssize_t len)
+static void loghex(unsigned char *buffer, ssize_t len)
 {
   char data[12000];
   ssize_t i;
@@ -152,7 +207,7 @@ void loghex(unsigned char *buffer, ssize_t len)
   int left = sizeof(data);
 
   for(i = 0; i < len && (left >= 0); i++) {
-    msnprintf(optr, left, "%02x", ptr[i]);
+    snprintf(optr, left, "%02x", ptr[i]);
     width += 2;
     optr += 2;
     left -= 2;
@@ -161,7 +216,7 @@ void loghex(unsigned char *buffer, ssize_t len)
     logmsg("'%s'", data);
 }
 
-unsigned char byteval(char *value)
+static unsigned char byteval(char *value)
 {
   unsigned long num = strtoul(value, NULL, 10);
   return num & 0xff;
@@ -189,7 +244,7 @@ static void win32_cleanup(void)
   _flushall();
 }
 
-int win32_init(void)
+static int win32_init(void)
 {
   curlx_now_init();
 #ifdef USE_WINSOCK
@@ -221,92 +276,49 @@ int win32_init(void)
 }
 
 /* socket-safe strerror (works on Winsock errors, too) */
-const char *sstrerror(int err)
+static const char *sstrerror(int err)
 {
   static char buf[512];
   return curlx_winapi_strerror(err, buf, sizeof(buf));
 }
+#else
+#define sstrerror(e) strerror(e)
 #endif  /* _WIN32 */
 
-/* set by the main code to point to where the test dir is */
-const char *srcpath = ".";
-
-FILE *test2fopen(long testno, const char *logdir2)
+/* fopens the test case file */
+static FILE *test2fopen(long testno, const char *logdir2)
 {
   FILE *stream;
   char filename[256];
   /* first try the alternative, preprocessed, file */
-  msnprintf(filename, sizeof(filename), "%s/test%ld", logdir2, testno);
+  snprintf(filename, sizeof(filename), "%s/test%ld", logdir2, testno);
   stream = fopen(filename, "rb");
   if(stream)
     return stream;
 
   /* then try the source version */
-  msnprintf(filename, sizeof(filename), "%s/data/test%ld", srcpath, testno);
+  snprintf(filename, sizeof(filename), "%s/data/test%ld", srcpath, testno);
   stream = fopen(filename, "rb");
 
   return stream;
 }
 
-/*
- * Portable function used for waiting a specific amount of ms.
- * Waiting indefinitely with this function is not allowed, a
- * zero or negative timeout value will return immediately.
- *
- * Return values:
- *   -1 = system call error, or invalid timeout value
- *    0 = specified timeout has elapsed
- */
-int wait_ms(timediff_t timeout_ms)
-{
-  int r = 0;
-
-  if(!timeout_ms)
-    return 0;
-  if(timeout_ms < 0) {
-    SET_SOCKERRNO(SOCKEINVAL);
-    return -1;
-  }
-#if defined(MSDOS)
-  delay((unsigned int)timeout_ms);
-#elif defined(_WIN32)
-  /* prevent overflow, timeout_ms is typecast to ULONG/DWORD. */
-#if TIMEDIFF_T_MAX >= ULONG_MAX
-  if(timeout_ms >= ULONG_MAX)
-    timeout_ms = ULONG_MAX-1;
-    /* do not use ULONG_MAX, because that is equal to INFINITE */
-#endif
-  Sleep((DWORD)timeout_ms);
+#ifdef _WIN32
+#define t_getpid() GetCurrentProcessId()
 #else
-  /* avoid using poll() for this since it behaves incorrectly with no sockets
-     on Apple operating systems */
-  {
-    struct timeval pending_tv;
-    r = select(0, NULL, NULL, NULL, curlx_mstotv(&pending_tv, timeout_ms));
-  }
-#endif /* _WIN32 */
-  if(r) {
-    if((r == -1) && (SOCKERRNO == SOCKEINTR))
-      /* make EINTR from select or poll not a "lethal" error */
-      r = 0;
-    else
-      r = -1;
-  }
-  return r;
-}
+#define t_getpid() getpid()
+#endif
 
-curl_off_t our_getpid(void)
+static curl_off_t our_getpid(void)
 {
-  curl_off_t pid;
-
-  pid = (curl_off_t)curlx_getpid();
+  curl_off_t pid = (curl_off_t)t_getpid();
 #ifdef _WIN32
   /* store pid + MAX_PID to avoid conflict with Cygwin/msys PIDs, see also:
-   * - 2019-01-31: https://cygwin.com/git/?p=newlib-cygwin.git;a=commit; ↵
+   * - 2019-01-31: https://cygwin.com/git/?p=newlib-cygwin.git;a=commit;
    *               h=b5e1003722cb14235c4f166be72c09acdffc62ea
-   * - 2019-02-02: https://cygwin.com/git/?p=newlib-cygwin.git;a=commit; ↵
+   * - 2019-02-02: https://cygwin.com/git/?p=newlib-cygwin.git;a=commit;
    *               h=448cf5aa4b429d5a9cebf92a0da4ab4b5b6d23fe
-   * - 2024-12-19: https://cygwin.com/git/?p=newlib-cygwin.git;a=commit; ↵
+   * - 2024-12-19: https://cygwin.com/git/?p=newlib-cygwin.git;a=commit;
    *               h=363357c023ce01e936bdaedf0f479292a8fa4e0f
    */
   pid += 4194304;
@@ -314,7 +326,7 @@ curl_off_t our_getpid(void)
   return pid;
 }
 
-int write_pidfile(const char *filename)
+static int write_pidfile(const char *filename)
 {
   FILE *pidfile;
   curl_off_t pid;
@@ -325,14 +337,14 @@ int write_pidfile(const char *filename)
     logmsg("Couldn't write pid file: %s %s", filename, strerror(errno));
     return 0; /* fail */
   }
-  fprintf(pidfile, "%" CURL_FORMAT_CURL_OFF_T "\n", pid);
+  fprintf(pidfile, "%ld\n", (long)pid);
   fclose(pidfile);
-  logmsg("Wrote pid %" CURL_FORMAT_CURL_OFF_T " to %s", pid, filename);
+  logmsg("Wrote pid %ld to %s", (long)pid, filename);
   return 1; /* success */
 }
 
 /* store the used port number in a file */
-int write_portfile(const char *filename, int port)
+static int write_portfile(const char *filename, int port)
 {
   FILE *portfile = fopen(filename, "wb");
   if(!portfile) {
@@ -345,7 +357,7 @@ int write_portfile(const char *filename, int port)
   return 1; /* success */
 }
 
-void set_advisor_read_lock(const char *filename)
+static void set_advisor_read_lock(const char *filename)
 {
   FILE *lockfile;
   int error = 0;
@@ -367,7 +379,7 @@ void set_advisor_read_lock(const char *filename)
            filename, errno, strerror(errno));
 }
 
-void clear_advisor_read_lock(const char *filename)
+static void clear_advisor_read_lock(const char *filename)
 {
   int error = 0;
   int res;
@@ -428,15 +440,16 @@ static HANDLE thread_main_window = NULL;
 static HWND hidden_main_window = NULL;
 #endif
 
-/* var which if set indicates that the program should finish execution */
-volatile int got_exit_signal = 0;
+/* global variable which if set indicates that the program should finish */
+static volatile int got_exit_signal = 0;
 
-/* if next is set indicates the first signal handled in exit_signal_handler */
-volatile int exit_signal = 0;
+/* global variable which if set indicates the first signal handled in
+   exit_signal_handler */
+static volatile int exit_signal = 0;
 
 #ifdef _WIN32
-/* event which if set indicates that the program should finish */
-HANDLE exit_event = NULL;
+/* global event which if set indicates that the program should finish */
+static HANDLE exit_event = NULL;
 #endif
 
 /* signal handler that will be triggered to indicate that the program
@@ -652,7 +665,7 @@ static SIGHANDLER_T set_signal(int signum, SIGHANDLER_T handler,
 }
 #endif
 
-void install_signal_handlers(bool keep_sigalrm)
+static void install_signal_handlers(bool keep_sigalrm)
 {
 #ifdef _WIN32
   /* setup Windows exit event before any signal can trigger */
@@ -720,7 +733,7 @@ void install_signal_handlers(bool keep_sigalrm)
 #endif
 }
 
-void restore_signal_handlers(bool keep_sigalrm)
+static void restore_signal_handlers(bool keep_sigalrm)
 {
 #ifdef SIGHUP
   if(SIG_ERR != old_sighup_handler)
@@ -776,8 +789,8 @@ void restore_signal_handlers(bool keep_sigalrm)
 
 #ifdef USE_UNIX_SOCKETS
 
-int bind_unix_socket(curl_socket_t sock, const char *unix_socket,
-                     struct sockaddr_un *sau)
+static int bind_unix_socket(curl_socket_t sock, const char *unix_socket,
+                            struct sockaddr_un *sau)
 {
   int error;
   int rc;
@@ -847,7 +860,7 @@ int bind_unix_socket(curl_socket_t sock, const char *unix_socket,
 #define CURL_MASK_USHORT  ((unsigned short)~0)
 #define CURL_MASK_SSHORT  (CURL_MASK_USHORT >> 1)
 
-unsigned short util_ultous(unsigned long ulnum)
+static unsigned short util_ultous(unsigned long ulnum)
 {
 #ifdef __INTEL_COMPILER
 #  pragma warning(push)

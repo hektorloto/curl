@@ -29,10 +29,12 @@
 struct Curl_easy;
 
 #include "mime.h"
-#include "warnless.h"
+#include "curlx/warnless.h"
 #include "urldata.h"
 #include "sendf.h"
+#include "transfer.h"
 #include "strdup.h"
+#include "curlx/base64.h"
 
 #if !defined(CURL_DISABLE_MIME) && (!defined(CURL_DISABLE_HTTP) ||      \
                                     !defined(CURL_DISABLE_SMTP) ||      \
@@ -45,7 +47,7 @@ struct Curl_easy;
 #include "rand.h"
 #include "slist.h"
 #include "strcase.h"
-#include "dynbuf.h"
+#include "curlx/dynbuf.h"
 /* The last 3 #include files should be in this order */
 #include "curl_printf.h"
 #include "curl_memory.h"
@@ -86,10 +88,6 @@ static const struct mime_encoder encoders[] = {
   {"quoted-printable", encoder_qp_read, encoder_qp_size},
   {ZERO_NULL, ZERO_NULL, ZERO_NULL}
 };
-
-/* Base64 encoding table */
-static const char base64enc[] =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /* Quoted-printable character class table.
  *
@@ -318,19 +316,19 @@ static char *escape_string(struct Curl_easy *data,
   if(strategy == MIMESTRATEGY_MAIL || (data && (data->set.mime_formescape)))
     table = mimetable;
 
-  Curl_dyn_init(&db, CURL_MAX_INPUT_LENGTH);
+  curlx_dyn_init(&db, CURL_MAX_INPUT_LENGTH);
 
-  for(result = Curl_dyn_addn(&db, STRCONST("")); !result && *src; src++) {
+  for(result = curlx_dyn_addn(&db, STRCONST("")); !result && *src; src++) {
     for(p = table; *p && **p != *src; p++)
       ;
 
     if(*p)
-      result = Curl_dyn_add(&db, *p + 1);
+      result = curlx_dyn_add(&db, *p + 1);
     else
-      result = Curl_dyn_addn(&db, src, 1);
+      result = curlx_dyn_addn(&db, src, 1);
   }
 
-  return Curl_dyn_ptr(&db);
+  return curlx_dyn_ptr(&db);
 }
 
 /* Check if header matches. */
@@ -472,10 +470,10 @@ static size_t encoder_base64_read(char *buffer, size_t size, bool ateof,
     i = st->buf[st->bufbeg++] & 0xFF;
     i = (i << 8) | (st->buf[st->bufbeg++] & 0xFF);
     i = (i << 8) | (st->buf[st->bufbeg++] & 0xFF);
-    *ptr++ = base64enc[(i >> 18) & 0x3F];
-    *ptr++ = base64enc[(i >> 12) & 0x3F];
-    *ptr++ = base64enc[(i >> 6) & 0x3F];
-    *ptr++ = base64enc[i & 0x3F];
+    *ptr++ = Curl_base64encdec[(i >> 18) & 0x3F];
+    *ptr++ = Curl_base64encdec[(i >> 12) & 0x3F];
+    *ptr++ = Curl_base64encdec[(i >> 6) & 0x3F];
+    *ptr++ = Curl_base64encdec[i & 0x3F];
     cursize += 4;
     st->pos += 4;
     size -= 4;
@@ -499,10 +497,10 @@ static size_t encoder_base64_read(char *buffer, size_t size, bool ateof,
           i = (st->buf[st->bufbeg + 1] & 0xFF) << 8;
 
         i |= (st->buf[st->bufbeg] & 0xFF) << 16;
-        ptr[0] = base64enc[(i >> 18) & 0x3F];
-        ptr[1] = base64enc[(i >> 12) & 0x3F];
+        ptr[0] = Curl_base64encdec[(i >> 18) & 0x3F];
+        ptr[1] = Curl_base64encdec[(i >> 12) & 0x3F];
         if(++st->bufbeg != st->bufend) {
-          ptr[2] = base64enc[(i >> 6) & 0x3F];
+          ptr[2] = Curl_base64encdec[(i >> 6) & 0x3F];
           st->bufbeg++;
         }
         cursize += 4;
@@ -1965,6 +1963,7 @@ static CURLcode cr_mime_read(struct Curl_easy *data,
                              size_t *pnread, bool *peos)
 {
   struct cr_mime_ctx *ctx = reader->ctx;
+  CURLcode result = CURLE_OK;
   size_t nread;
   char tmp[256];
 
@@ -1993,7 +1992,6 @@ static CURLcode cr_mime_read(struct Curl_easy *data,
   }
 
   if(!Curl_bufq_is_empty(&ctx->tmpbuf)) {
-    CURLcode result = CURLE_OK;
     ssize_t n = Curl_bufq_read(&ctx->tmpbuf, (unsigned char *)buf, blen,
                                &result);
     if(n < 0) {
@@ -2011,7 +2009,6 @@ static CURLcode cr_mime_read(struct Curl_easy *data,
     CURL_TRC_READ(data, "cr_mime_read(len=%zu), small read, using tmp", blen);
     nread = Curl_mime_read(tmp, 1, sizeof(tmp), ctx->part);
     if(nread <= sizeof(tmp)) {
-      CURLcode result = CURLE_OK;
       ssize_t n = Curl_bufq_write(&ctx->tmpbuf, (unsigned char *)tmp, nread,
                                   &result);
       if(n < 0) {
@@ -2054,14 +2051,15 @@ static CURLcode cr_mime_read(struct Curl_easy *data,
     *peos = FALSE;
     ctx->errored = TRUE;
     ctx->error_result = CURLE_ABORTED_BY_CALLBACK;
-    return CURLE_ABORTED_BY_CALLBACK;
+    result = CURLE_ABORTED_BY_CALLBACK;
+    break;
 
   case CURL_READFUNC_PAUSE:
     /* CURL_READFUNC_PAUSE pauses read callbacks that feed socket writes */
     CURL_TRC_READ(data, "cr_mime_read(len=%zu), paused by callback", blen);
-    data->req.keepon |= KEEP_SEND_PAUSE; /* mark socket send as paused */
     *pnread = 0;
     *peos = FALSE;
+    result = Curl_xfer_pause_send(data, TRUE);
     break; /* nothing was read */
 
   case STOP_FILLING:
@@ -2071,7 +2069,8 @@ static CURLcode cr_mime_read(struct Curl_easy *data,
     *peos = FALSE;
     ctx->errored = TRUE;
     ctx->error_result = CURLE_READ_ERROR;
-    return CURLE_READ_ERROR;
+    result = CURLE_READ_ERROR;
+    break;
 
   default:
     if(nread > blen) {
@@ -2093,8 +2092,8 @@ static CURLcode cr_mime_read(struct Curl_easy *data,
 
   CURL_TRC_READ(data, "cr_mime_read(len=%zu, total=%" FMT_OFF_T
                 ", read=%"FMT_OFF_T") -> %d, %zu, %d",
-                blen, ctx->total_len, ctx->read_len, CURLE_OK, *pnread, *peos);
-  return CURLE_OK;
+                blen, ctx->total_len, ctx->read_len, result, *pnread, *peos);
+  return result;
 }
 
 static bool cr_mime_needs_rewind(struct Curl_easy *data,
